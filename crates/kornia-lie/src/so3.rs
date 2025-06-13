@@ -112,21 +112,35 @@ impl SO3 {
 
     pub fn left_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
+        let theta_squared = v.dot(v);
         let ident = Mat3A::IDENTITY;
 
-        ident
-            + ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+        if theta_squared < 1e-8 {
+            // Use Taylor series for small angles to avoid division by zero
+            // J_l ≈ I + 0.5 * skew + (1/12) * skew^2 + O(theta^4)
+            ident + 0.5 * skew + (1.0 / 12.0) * (skew * skew)
+        } else {
+            let theta = theta_squared.sqrt();
+            ident
+                + ((1.0 - theta.cos()) / theta_squared) * skew
+                + ((theta - theta.sin()) / (theta_squared * theta)) * (skew * skew)
+        }
     }
 
     pub fn right_jacobian(v: Vec3A) -> Mat3A {
         let skew = Self::hat(v);
-        let theta = v.dot(v).sqrt();
+        let theta_squared = v.dot(v);
         let ident = Mat3A::IDENTITY;
 
-        ident - ((1.0 - theta.cos()) / theta.powi(2)) * skew
-            + ((theta - theta.sin()) / theta.powi(3)) * (skew * skew)
+        if theta_squared < 1e-8 {
+            // Use Taylor series for small angles to avoid division by zero
+            // J_r ≈ I - 0.5 * skew + (1/12) * skew^2 + O(theta^4)
+            ident - 0.5 * skew + (1.0 / 12.0) * (skew * skew)
+        } else {
+            let theta = theta_squared.sqrt();
+            ident - ((1.0 - theta.cos()) / theta_squared) * skew
+                + ((theta - theta.sin()) / (theta_squared * theta)) * (skew * skew)
+        }
     }
 }
 

@@ -81,6 +81,18 @@ impl SO2 {
     pub fn vee(omega: Mat2) -> f32 {
         omega.y_axis.x
     }
+
+    /// Left Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_l(theta) = 1.
+    pub fn left_jacobian(_theta: f32) -> f32 {
+        1.0
+    }
+
+    /// Right Jacobian of SO(2).
+    /// For SO(2), the Lie group is commutative, J_r(theta) = 1.
+    pub fn right_jacobian(_theta: f32) -> f32 {
+        1.0
+    }
 }
 
 impl std::ops::Mul<Vec2> for SO2 {
@@ -111,6 +123,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     const EPSILON: f32 = 1e-6;
+    const JACOBIAN_TEST_EPSILON: f32 = 1e-5; // Epsilon for Jacobian tests
 
     fn make_random_so2() -> SO2 {
         SO2::from_random()
@@ -282,6 +295,15 @@ mod tests {
             let hat = SO2::hat(val);
             let vee = SO2::vee(hat);
             assert_relative_eq!(vee, val, epsilon = EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_so2_jacobians() {
+        let test_thetas = [0.0, 0.1, -0.5, std::f32::consts::PI];
+        for theta in test_thetas.iter() {
+            assert_relative_eq!(SO2::left_jacobian(*theta), 1.0, epsilon = JACOBIAN_TEST_EPSILON);
+            assert_relative_eq!(SO2::right_jacobian(*theta), 1.0, epsilon = JACOBIAN_TEST_EPSILON);
         }
     }
 

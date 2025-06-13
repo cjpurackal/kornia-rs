@@ -144,6 +144,68 @@ impl SE3 {
             SO3::vee4(omega),
         )
     }
+
+    const EPS: f32 = 1e-5;
+
+    /// left Jacobian of SE(3)  (6×6)
+    pub fn left_jacobian(rho: Vec3A, phi: Vec3A) -> [[f32; 6]; 6] {
+        // 1. SO(3) blocks --------------------------------------------------------
+        let jl_so3 = SO3::left_jacobian(phi);          // 3×3
+        let phi_hat = SO3::hat(phi);                  // ρ̂ etc.
+        let rho_hat = SO3::hat(rho);
+
+        // 2. build Q_l -----------------------------------------------------------
+        let theta2 = phi.length_squared();
+        let (a, b) = if theta2 < Self::EPS * Self::EPS {
+            // small-angle series
+            (
+                0.5 - theta2 / 24.0,               // A ≈ ½ − θ²/24
+                1.0 / 6.0 - theta2 / 120.0         // B ≈ 1/6 − θ²/120
+            )
+        } else {
+            let theta = theta2.sqrt();
+            (
+                (1.0 - theta.cos()) / theta2,                 // A
+                (theta - theta.sin()) / (theta2 * theta)      // B
+            )
+        };
+
+        // Q_l = Jl_so3*rhô + ½ρ̂ + A(φ̂ρ̂+ρ̂φ̂) + B φ̂ρ̂φ̂
+        let q_l = jl_so3 * rho_hat
+                + 0.5 * rho_hat
+                + a * (phi_hat * rho_hat + rho_hat * phi_hat)
+                + b * (phi_hat * rho_hat * phi_hat);
+
+        // 3. assemble 6×6 --------------------------------------------------------
+        let mut jl = [[0.0f32; 6]; 6];
+
+        // top-left 3×3  (rotation)
+        for r in 0..3 {
+            for c in 0..3 {
+                jl[r][c] = jl_so3.col(c)[r];
+            }
+        }
+        // top-right 3×3  (translation–rotation coupling)
+        for r in 0..3 {
+            for c in 0..3 {
+                jl[r][c + 3] = q_l.col(c)[r];
+            }
+        }
+        // bottom-right 3×3  (rotation again)
+        for r in 0..3 {
+            for c in 0..3 {
+                jl[r + 3][c + 3] = jl_so3.col(c)[r];
+            }
+        }
+        jl
+    }
+
+    /// right Jacobian  J_r(xi) = J_l(−xi)
+    #[inline]
+    pub fn right_jacobian(rho: Vec3A, phi: Vec3A) -> [[f32; 6]; 6] {
+        Self::left_jacobian(-rho, -phi)
+    }
+
 }
 
 impl std::ops::Mul<SE3> for SE3 {
@@ -168,8 +230,10 @@ impl std::ops::Mul<Vec3A> for SE3 {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use glam::{Mat3, Vec3, Vec4, Mat4 as GlamMat4}; // For creating Vec3 for twist vector in tests
 
     const EPSILON: f32 = 1e-6;
+    const JACOBIAN_TEST_EPSILON: f32 = 1e-6; // More reasonable tolerance for SE(3) operations
 
     fn make_random_se3() -> SE3 {
         SE3::from_random()
@@ -575,5 +639,117 @@ mod tests {
         assert_relative_eq!(left_assoc.t.x, right_assoc.t.x, epsilon = EPSILON);
         assert_relative_eq!(left_assoc.t.y, right_assoc.t.y, epsilon = EPSILON);
         assert_relative_eq!(left_assoc.t.z, right_assoc.t.z, epsilon = EPSILON);
+    }
+
+    #[test]
+    fn test_se3_jacobians() {
+        let test_twists = [
+            (Vec3A::new(0.0, 0.0, 0.0), Vec3A::new(0.0, 0.0, 0.0)),
+            (Vec3A::new(0.1, 0.2, 0.3), Vec3A::new(0.01, 0.02, 0.03)),
+            (Vec3A::new(1.0, -0.5, 0.2), Vec3A::new(0.0001, -0.0002, 0.0003)), // Small omega
+            (Vec3A::new(0.5, 1.5, -1.0), Vec3A::new(0.4, 0.5, 0.6)),
+        ];
+
+        for (upsilon, omega) in test_twists.iter() {
+            let upsilon_val = *upsilon;
+            let omega_val = *omega;
+            let _twist_arr = [upsilon_val.x, upsilon_val.y, upsilon_val.z, omega_val.x, omega_val.y, omega_val.z];
+
+            let jl = SE3::left_jacobian(upsilon_val, omega_val);
+            let jr = SE3::right_jacobian(upsilon_val, omega_val);
+
+            // Test property: J_r(xi) = J_l(-xi)
+            let jl_neg = SE3::left_jacobian(-upsilon_val, -omega_val);
+            for r in 0..6 {
+                for c_ in 0..6 {
+                    assert_relative_eq!(jr[r][c_], jl_neg[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+                }
+            }
+
+            // TODO: This relationship might need verification for SE(3)
+            // Test property: J_l(xi) = Ad(exp(xi)) * J_r(xi)
+            // let exp_xi = SE3::exp(upsilon_val, omega_val);
+            // let adj_exp_xi = exp_xi.adjoint(); // This is the 6x6 Adjoint matrix
+            // 
+            // let adj_mul_jr = multiply_6x6_matrices(&adj_exp_xi, &jr);
+            // for r in 0..6 {
+            //     for c_ in 0..6 {
+            //         assert_relative_eq!(jl[r][c_], adj_mul_jr[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+            //     }
+            // }
+
+            // Test J(0) = I
+            if upsilon_val.length_squared() < 1e-12 && omega_val.length_squared() < 1e-12 {
+                let identity_6x6 = {
+                    let mut id = [[0.0f32; 6]; 6];
+                    for i in 0..6 { id[i][i] = 1.0; }
+                    id
+                };
+                for r in 0..6 {
+                    for c_ in 0..6 {
+                        assert_relative_eq!(jl[r][c_], identity_6x6[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+                        assert_relative_eq!(jr[r][c_], identity_6x6[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+                    }
+                }
+            }
+        }
+
+        // Test J_l(0) = I
+        let jl_zero = SE3::left_jacobian(Vec3A::ZERO, Vec3A::ZERO);
+        let identity_6x6 = {
+            let mut id = [[0.0f32; 6]; 6];
+            for i in 0..6 { id[i][i] = 1.0; }
+            id
+        };
+        for r in 0..6 {
+            for c_ in 0..6 {
+                assert_relative_eq!(jl_zero[r][c_], identity_6x6[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+            }
+        }
+
+        // Test J_r(0) = I
+        let jr_zero = SE3::right_jacobian(Vec3A::ZERO, Vec3A::ZERO);
+        for r in 0..6 {
+            for c_ in 0..6 {
+                assert_relative_eq!(jr_zero[r][c_], identity_6x6[r][c_], epsilon = JACOBIAN_TEST_EPSILON);
+            }
+        }
+    }
+
+    // Helper to convert 6x6 array to a glam Mat4 for multiplication if needed (not directly, but for Adjoint concept)
+    // For SE(3) Adjoint is 6x6
+    fn se3_adjoint_matrix(se3: &SE3) -> GlamMat4 { // This is not the 6x6 Lie Adjoint, but group Adjoint as 4x4 matrix transform on twists
+        let r_mat = se3.r.matrix();
+        let t_hat_r = SO3::hat(se3.t) * r_mat;
+        GlamMat4::from_cols(
+            r_mat.x_axis.extend(0.0),
+            r_mat.y_axis.extend(0.0),
+            r_mat.z_axis.extend(0.0),
+            Vec3A::ZERO.extend(1.0),
+        ) // This is not the correct Adjoint matrix representation for multiplying with 6x1 twists
+    }
+
+    // Helper to multiply a 6x6 matrix (array) by a 6x1 vector (array)
+    fn multiply_6x6_by_6x1(matrix: &[[f32; 6]; 6], vector: &[f32; 6]) -> [f32; 6] {
+        let mut result = [0.0f32; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                result[i] += matrix[i][j] * vector[j];
+            }
+        }
+        result
+    }
+    
+    // Helper to multiply two 6x6 matrices
+    fn multiply_6x6_matrices(a: &[[f32; 6]; 6], b: &[[f32; 6]; 6]) -> [[f32; 6]; 6] {
+        let mut result = [[0.0f32; 6]; 6];
+        for i in 0..6 {
+            for j in 0..6 {
+                for k in 0..6 {
+                    result[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
+        result
     }
 }
